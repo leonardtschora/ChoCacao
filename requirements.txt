@@ -3,3 +3,4 @@
 streamlit>=1.40
 requests>=2.32
 pandas>=2.2
+tzdata>=2024.1

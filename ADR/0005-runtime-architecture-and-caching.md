@@ -31,23 +31,33 @@ batches, so a cold fetch reliably completes in tens of seconds.
 
 ### Caching (`st.cache_data`)
 
-`get_forecast(day)` is cached with `ttl=1800` and keyed by the calendar day.
-Because `st.cache_data` is **shared across all user sessions** on a Streamlit
-server, the API is hit only a handful of times per 30-minute window *no matter
-how many users connect*. This already caps the daily query count to a small,
-bounded number — directly addressing the spec's "cap queries / cache daily"
-concern.
+`get_forecast(period_key)` is cached and keyed by a **forecast period that rolls
+over once a day at 02:00 Europe/Paris** (`forecast_period_key()` returns
+`(now − 2h).date()`). There is **no short TTL**: the key changes exactly once per
+day, so the whole of France is pulled from open-meteo **once daily** and that
+single pull serves every user and every selectable date/hour (we fetch the entire
+week and slice in memory). Because `st.cache_data` is shared across all user
+sessions, the daily query count is a small fixed number regardless of how many
+people connect. `max_entries=2` bounds memory to the current and previous day.
+
+02:00 is chosen as a quiet hour just after the day boundary. The trade-off is
+that the displayed forecast can lag the latest open-meteo model run by up to a
+day — acceptable for "where to escape the heat this week".
+
+The date-picker bounds are derived from the dates actually present in the cached
+timeline (not from the calendar), so the selectable range and the cached data can
+never disagree (e.g. in the 00:00–02:00 window before the daily refresh).
 
 ## Future work (per spec)
 
-- A scheduled job (e.g. GitHub Action or cron) could pull forecasts once daily
-  into a committed/object-store snapshot, making the app fully read-only at run
-  time and removing even the first-user fetch latency. The current
-  shared-cache design is the lightweight version of this and the natural
-  stepping stone.
+- A scheduled job (e.g. GitHub Action or cron) could pull forecasts into a
+  committed / object-store snapshot, making the app fully read-only at run time
+  and removing even the first-request-of-the-day fetch latency. The current
+  once-daily shared cache already realises the spec's "pull on a daily basis /
+  cap queries" goal in-process; an external snapshot is the natural next step.
 
 ## Consequences
 
-- First request after a cache miss pays the fetch cost (~tens of seconds, with a
-  spinner); subsequent interactions are instant.
-- The number of selectable days is tied to `FORECAST_DAYS` (8 → today + 7).
+- The first request after 02:00 each day pays the fetch cost (~tens of seconds,
+  with a spinner); every other request that day is instant.
+- The forecast horizon is tied to `FORECAST_DAYS` (8 → today + 7).

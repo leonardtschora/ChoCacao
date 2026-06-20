@@ -10,19 +10,20 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
-from chocacao.forecast import FORECAST_DAYS, Place, fetch_forecast, load_places
+from chocacao.forecast import Place, fetch_forecast, load_places
 
 st.set_page_config(page_title="ChoCacao", page_icon="🍫", layout="wide")
 
 DEFAULT_HOUR = 16  # 4 pm: usually the hottest hour of the day
 TOP_N = 20
-# Selectable horizon: today plus the next 7 days (the rest of the forecast
-# window is kept as a safety margin so the requested hour is always covered).
-MAX_DAYS_AHEAD = FORECAST_DAYS - 1
+
+PARIS_TZ = ZoneInfo("Europe/Paris")
+REFRESH_HOUR = 2  # forecasts are refreshed once a day at 02:00 Paris time
 
 HOT_COLOR = "#d7301f"
 COOL_COLOR = "#0b5394"
@@ -37,14 +38,26 @@ class Reading:
     temp: float
 
 
-@st.cache_data(ttl=1800, show_spinner="Fetching forecasts from open-meteo…")
-def get_forecast(day: str) -> tuple[list[Place], list[str], dict[str, list[float | None]]]:
-    """Load places and their forecasts. Cached per day (refreshed every 30 min).
+def forecast_period_key(now: datetime | None = None) -> str:
+    """Cache key for the daily forecast pull.
 
-    The ``day`` argument is the cache key: a new calendar day forces a fresh
-    pull. Because ``st.cache_data`` is shared across all user sessions, the
-    open-meteo API is queried only a handful of times per refresh window no
-    matter how many people are using the app.
+    Rolls over once a day at REFRESH_HOUR (02:00 Europe/Paris): before 02:00 we
+    are still on the previous day's pull; at/after 02:00 the key changes and a
+    single fresh fetch is shared by everyone for the next 24 hours.
+    """
+    now = now or datetime.now(PARIS_TZ)
+    return (now - timedelta(hours=REFRESH_HOUR)).date().isoformat()
+
+
+@st.cache_data(show_spinner="Fetching forecasts from open-meteo…", max_entries=2)
+def get_forecast(period_key: str) -> tuple[list[Place], list[str], dict[str, list[float | None]]]:
+    """Load places and their forecasts, pulled once per day.
+
+    ``period_key`` (from :func:`forecast_period_key`) is the cache key: it changes
+    once a day at 02:00 Paris time, so open-meteo is queried just once daily.
+    Because ``st.cache_data`` is shared across all user sessions, that single pull
+    serves every user and every selectable date/hour — we fetch the whole week
+    and slice it in memory, so changing the date or hour never hits the API.
     """
     places = load_places()
     times, series = fetch_forecast(places)
@@ -155,14 +168,30 @@ def main() -> None:
         "chase the sun or escape the heatwave."
     )
 
-    today = date.today()
+    try:
+        places, times, series = get_forecast(forecast_period_key())
+    except Exception as exc:  # surface API/network issues to the user
+        st.error(f"Could not fetch forecasts from open-meteo: {exc}")
+        st.stop()
+    if not times:
+        st.error("open-meteo returned no forecast timeline. Please try again later.")
+        st.stop()
+
+    # The selectable range is exactly the window held in today's cached pull,
+    # so a valid selection can never fall outside the fetched data.
+    available_dates = sorted({t[:10] for t in times})
+    min_date = date.fromisoformat(available_dates[0])
+    max_date = date.fromisoformat(available_dates[-1])
+    today = datetime.now(PARIS_TZ).date()
+    default_date = min(max(today, min_date), max_date)
+
     col_date, col_hour, _ = st.columns([1, 1, 2])
     with col_date:
         date_value = st.date_input(
             "Date",
-            value=today,
-            min_value=today,
-            max_value=today + timedelta(days=MAX_DAYS_AHEAD),
+            value=default_date,
+            min_value=min_date,
+            max_value=max_date,
             help="Forecasts are available up to one week ahead.",
         )
     with col_hour:
@@ -174,14 +203,8 @@ def main() -> None:
             help="Default is 16:00 (4 pm), usually the hottest hour of the day.",
         )
 
-    chosen = selected_date(date_value, today)
+    chosen = selected_date(date_value, default_date)
     target = f"{chosen.isoformat()}T{hour:02d}:00"
-
-    try:
-        places, times, series = get_forecast(today.isoformat())
-    except Exception as exc:  # surface API/network issues to the user
-        st.error(f"Could not fetch forecasts from open-meteo: {exc}")
-        st.stop()
 
     readings = build_readings(places, times, series, target)
     when = datetime.fromisoformat(target).strftime("%A %d %B %Y at %H:%M")

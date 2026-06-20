@@ -172,6 +172,7 @@ dependencies = [
     { name = "pandas" },
     { name = "requests" },
     { name = "streamlit" },
+    { name = "tzdata" },
 ]
 
 [package.dev-dependencies]
@@ -185,6 +186,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2" },
     { name = "requests", specifier = ">=2.32" },
     { name = "streamlit", specifier = ">=1.40" },
+    { name = "tzdata", specifier = ">=2024.1" },
 ]
 
 [package.metadata.requires-dev]
