@@ -23,15 +23,19 @@ We replaced the simple `st.map` with **pydeck**, because we now need click
 selection, custom colours, tooltips, and zoom-aware sizing — none of which
 `st.map` supports.
 
-- **Basemap:** the official French **IGN "Plan IGN" vector style** (attenuated
-  variant) from the Géoplateforme (`data.geopf.fr`, no API key), set as the deck's
-  `map_style` and rendered by MapLibre via `map_provider="carto"` (token-free).
-  This is a genuinely French map with French labels.
-  - *Pitfall avoided:* a first attempt used a raster `TileLayer`, which appeared
-    blank. deck.gl's `TileLayer` needs a JS `renderSubLayers`/`BitmapLayer`
-    callback to actually draw raster tiles, which pydeck cannot express from
-    Python. Using IGN's MapLibre **vector style as the base map** (not a deck
-    layer) is the correct, working approach.
+- **Basemap:** the **CARTO "Voyager"** vector style (`map_provider="carto"`,
+  token-free), which has French place labels and renders reliably. Verified in a
+  headless browser (the base + overlay canvases paint, no console errors).
+  - *Two failed attempts at an IGN basemap, and why:*
+    1. IGN **raster** tiles via a deck.gl `TileLayer` rendered blank —
+       `TileLayer` needs a JS `renderSubLayers`/`BitmapLayer` callback to draw
+       raster tiles, which pydeck can't express from Python.
+    2. IGN **vector** style URL as `map_style` with the carto provider crashed
+       the whole deck.gl frontend (blank page, infinite "running" spinner).
+       Streamlit's `carto` provider only accepts **CARTO-hosted** style URLs, and
+       there is no token-free way to feed an arbitrary (IGN) MapLibre style.
+  - A genuine IGN basemap would require a different renderer (e.g. Leaflet via
+    `streamlit-folium`), traded off against pydeck's click/colour/zoom features.
 - **Points:** a `ScatterplotLayer` of the 200 extreme communes (100 coolest +
   100 hottest), `pickable=True`, coloured by the **same diverging scale as the
   tables** (ADR 0006). The scale is **gamma-steepened** (`abs(frac) ** 0.5`) so

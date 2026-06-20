@@ -36,9 +36,10 @@ COOL_RGB = (0, 51, 160)
 # Gamma < 1 raidit le dégradé : un faible écart à la médiane se voit déjà bien.
 GRADIENT_GAMMA = 0.5
 
-# Fond de carte officiel français : style vectoriel « Plan IGN » atténué
-# (IGN / Géoplateforme), chargé par MapLibre comme fond de la carte deck.gl.
-IGN_MAP_STYLE = "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/attenue.json"
+# Fond de carte : style vectoriel CARTO « Voyager » (labels en français, sans clé
+# d'API). NB : Streamlit/pydeck (fournisseur "carto") n'accepte que des styles
+# hébergés par CARTO — un style IGN/Géoplateforme fait planter le rendu deck.gl.
+BASEMAP_STYLE = pdk.map_styles.CARTO_ROAD
 
 JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 MOIS = [
@@ -226,7 +227,7 @@ def build_map(rows: list[Reading], median: float, scale: float):
         layers=[scatter],
         initial_view_state=pdk.ViewState(latitude=46.6, longitude=2.5, zoom=4.7),
         map_provider="carto",
-        map_style=IGN_MAP_STYLE,
+        map_style=BASEMAP_STYLE,
         height=560,
         **deck_kwargs,
     )
@@ -347,7 +348,8 @@ def main() -> None:
     st.caption(
         "Données météo : [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0) · "
         "Communes : [geo.api.gouv.fr](https://geo.api.gouv.fr/) · "
-        "Fond de carte : [IGN / Géoplateforme](https://geoservices.ign.fr/). "
+        "Fond de carte : © [OpenStreetMap](https://www.openstreetmap.org/copyright) "
+        "/ [CARTO](https://carto.com/). "
         "Températures de l'air à 2 m en °C, heure locale."
     )
 

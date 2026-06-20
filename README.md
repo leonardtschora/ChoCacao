@@ -11,8 +11,8 @@ chase the sun or escape the heat.
 Pick a **date** (today up to one week ahead) and an **hour** (default 16:00, the
 usual daily peak). ChoCacao queries [Open-Meteo](https://open-meteo.com/) for ~880
 communes on a 25 km grid and shows the extremes as two **sortable** tables
-(commune, département, temperature, and difference to the national median). An
-**IGN map** plots the extremes, coloured by temperature; **click a point** to open
+(commune, département, temperature, and difference to the national median). A
+**map** plots the extremes, coloured by temperature; **click a point** to open
 a panel with its detail and a 48-hour temperature curve.
 
 ## How it works
@@ -83,8 +83,8 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright
   hourly, local time (CC BY 4.0).
 - Communes & départements: [geo.api.gouv.fr](https://geo.api.gouv.fr/) (French
   government).
-- Basemap: [IGN / Géoplateforme](https://geoservices.ign.fr/) (Plan IGN vector
-  style, rendered by MapLibre).
+- Basemap: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors,
+  © [CARTO](https://carto.com/) (Voyager style, French labels).
 
 Coverage is metropolitan France including Corsica; overseas territories are out
 of scope. Temperatures are forecasts, coloured on a diverging blue→red scale
