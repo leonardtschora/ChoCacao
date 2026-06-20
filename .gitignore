@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtual environments / uv
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS / editor / tooling
+.DS_Store
+*~
+.idea/
+.vscode/
+.claude/
+.ruff_cache/
+
+# Logs / scratch
+*.log

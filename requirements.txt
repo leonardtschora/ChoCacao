@@ -1,0 +1,5 @@
+# Runtime dependencies for Streamlit Community Cloud (installed via pip).
+# The source of truth for local development is pyproject.toml + uv.lock.
+streamlit>=1.40
+requests>=2.32
+pandas>=2.2
