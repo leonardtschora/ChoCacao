@@ -1,7 +1,8 @@
 # 🍫 ChoCacao
 
-**Find the 20 hottest and 20 coolest places in metropolitan France for any hour
-in the week ahead.**
+**Find the 50 hottest and 50 coolest *communes* in metropolitan France for any
+hour in the week ahead.** (The interface is in French — it's built for French
+users.)
 
 France packs Atlantic, Mediterranean and Alpine climates into one country — 200 km
 can mean ±10 °C. When the next heatwave hits, ChoCacao shows you exactly where to
@@ -9,8 +10,10 @@ chase the sun or escape the heat.
 
 Pick a **date** (today up to one week ahead) and an **hour** (default 16:00, the
 usual daily peak). ChoCacao queries [Open-Meteo](https://open-meteo.com/) for ~880
-communes spread on a 25 km grid and shows the temperature extremes as two tables.
-**Click any place name** to open it, pinned, in Google Maps.
+communes on a 25 km grid and shows the extremes as two **sortable** tables
+(commune, département, temperature, and difference to the national median). An
+**IGN map** plots the extremes, coloured by temperature; **click a point** to open
+a panel with its detail and a 48-hour temperature curve.
 
 ## How it works
 
@@ -20,11 +23,11 @@ communes spread on a 25 km grid and shows the temperature extremes as two tables
    │ 25 km grid over France  (grid.py)      │   │ load data/grid_points.csv    │
    │   2036 points                          │   │ fetch hourly temps for the   │
    │      │ reverse-geocode each point      │   │   whole week (open-meteo,    │
-   │      ▼ (geo.api.gouv.fr, geocode.py)   │   │   batched, cached)           │
+   │      ▼ (geo.api.gouv.fr, geocode.py)   │   │   batched, cached daily)     │
    │ keep points inside France, dedupe      │   │ slice chosen date+hour       │
-   │   880 communes                         │   │ rank → top 20 hot / cold     │
-   │      ▼                                 │   │ two tables + Google Maps      │
-   │ data/grid_points.csv  (committed)      │   │   links + map (streamlit_app)│
+   │   880 communes                         │   │ rank → top 50 cold / hot     │
+   │      ▼                                 │   │ sortable tables + IGN map    │
+   │ data/grid_points.csv  (committed)      │   │   + click→detail dialog      │
    └───────────────────────────────────────┘   └──────────────────────────────┘
 ```
 
@@ -41,6 +44,7 @@ database. See [`ADR/`](ADR/) for the full reasoning behind every decision.
 | `chocacao/geocode.py` | Reverse-geocode a point to its commune. |
 | `chocacao/build_grid.py` | One-time build of `data/grid_points.csv`. |
 | `chocacao/forecast.py` | Batched, rate-limited open-meteo fetching. |
+| `chocacao/departements.py` | INSEE-code → département name map. |
 | `data/grid_points.csv` | Precomputed grid → commune table (880 rows). |
 | `ADR/` | Architecture Decision Records. |
 
@@ -77,7 +81,10 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright
 
 - Weather: [Open-Meteo.com](https://open-meteo.com/) — 2 m air temperature,
   hourly, local time (CC BY 4.0).
-- Communes: [geo.api.gouv.fr](https://geo.api.gouv.fr/) (French government).
+- Communes & départements: [geo.api.gouv.fr](https://geo.api.gouv.fr/) (French
+  government).
+- Basemap: [IGN / Géoplateforme](https://geoservices.ign.fr/) (Plan IGN v2).
 
 Coverage is metropolitan France including Corsica; overseas territories are out
-of scope. Temperatures are forecasts and shaded amber→red (hot) / blue (cool).
+of scope. Temperatures are forecasts, coloured on a diverging blue→red scale
+centred on the national median (blue = cooler, red = hotter).

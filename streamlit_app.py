@@ -1,64 +1,93 @@
-"""ChoCacao — the 20 hottest and 20 coolest places in metropolitan France.
+"""ChoCacao — les communes les plus chaudes et les plus fraîches de France.
 
-Pick a date (up to a week ahead) and an hour; ChoCacao queries open-meteo for
-~1000 communes spread on a 25 km grid and shows the extremes as two tables.
-Click a place name to open it, pinned, in Google Maps.
+Choisissez une date (jusqu'à une semaine à l'avance) et une heure ; ChoCacao
+interroge open-meteo pour ~880 communes réparties sur une grille de 25 km et
+affiche les extrêmes. Cliquez sur un point de la carte pour le détail.
 """
 
 from __future__ import annotations
 
-import html
+import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
 
 from chocacao.forecast import Place, fetch_forecast, load_places
 
 st.set_page_config(page_title="ChoCacao", page_icon="🍫", layout="wide")
 
-DEFAULT_HOUR = 16  # 4 pm: usually the hottest hour of the day
-TOP_N = 20
+DEFAULT_HOUR = 16  # 16 h : heure généralement la plus chaude de la journée
+TOP_N = 50
+CURVE_HOURS = 48
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
-REFRESH_HOUR = 2  # forecasts are refreshed once a day at 02:00 Paris time
+REFRESH_HOUR = 2  # les prévisions sont rafraîchies une fois par jour, à 02 h 00
 
-HOT_COLOR = "#d7301f"
-COOL_COLOR = "#0b5394"
+# Échelle de couleur divergente (RGB) partagée par les tableaux et la carte :
+# bleu profond = plus frais que la médiane, rouge profond = plus chaud.
+NEUTRAL_RGB = (245, 245, 240)
+HOT_RGB = (183, 28, 28)
+COOL_RGB = (13, 71, 161)
+
+# Fond de carte officiel français (IGN / Géoplateforme, Plan IGN v2).
+IGN_PLAN_TILES = (
+    "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
+    "&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM"
+    "&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png"
+)
+
+JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+MOIS = [
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+]
 
 
 @dataclass(frozen=True)
 class Reading:
+    insee_code: str
     name: str
     postal_code: str
+    departement_code: str
+    departement_name: str
     lat: float
     lon: float
     temp: float
 
+    @property
+    def departement(self) -> str:
+        return f"{self.departement_code} · {self.departement_name}"
+
+
+def format_fr(dt: datetime) -> str:
+    """e.g. 'samedi 20 juin 2026 à 16:00'."""
+    return f"{JOURS[dt.weekday()]} {dt.day} {MOIS[dt.month - 1]} {dt.year} à {dt.hour:02d}:00"
+
 
 def forecast_period_key(now: datetime | None = None) -> str:
-    """Cache key for the daily forecast pull.
-
-    Rolls over once a day at REFRESH_HOUR (02:00 Europe/Paris): before 02:00 we
-    are still on the previous day's pull; at/after 02:00 the key changes and a
-    single fresh fetch is shared by everyone for the next 24 hours.
-    """
+    """Cache key that rolls over once a day at REFRESH_HOUR (Europe/Paris)."""
     now = now or datetime.now(PARIS_TZ)
     return (now - timedelta(hours=REFRESH_HOUR)).date().isoformat()
 
 
-@st.cache_data(show_spinner="Fetching forecasts from open-meteo…", max_entries=2)
+@st.cache_data(show_spinner="Récupération des prévisions depuis open-meteo…", max_entries=2)
 def get_forecast(period_key: str) -> tuple[list[Place], list[str], dict[str, list[float | None]]]:
-    """Load places and their forecasts, pulled once per day.
-
-    ``period_key`` (from :func:`forecast_period_key`) is the cache key: it changes
-    once a day at 02:00 Paris time, so open-meteo is queried just once daily.
-    Because ``st.cache_data`` is shared across all user sessions, that single pull
-    serves every user and every selectable date/hour — we fetch the whole week
-    and slice it in memory, so changing the date or hour never hits the API.
-    """
+    """Load places and their forecasts, pulled once per day (see forecast_period_key)."""
     places = load_places()
     times, series = fetch_forecast(places)
     return places, times, series
@@ -72,83 +101,23 @@ def _lerp(a: int, b: int, frac: float) -> int:
     return round(a + (b - a) * frac)
 
 
-def temp_color(temp: float, vmin: float, vmax: float, hot: bool) -> str:
-    """Inline style for a temperature cell (deeper colour = more extreme)."""
-    span = vmax - vmin
-    frac = 0.0 if span <= 0 else (temp - vmin) / span
-    if not hot:
-        frac = 1.0 - frac  # coolest gets the deepest colour
-    if hot:
-        light, deep = (255, 244, 219), (183, 28, 28)  # pale amber -> deep red
-    else:
-        light, deep = (227, 242, 253), (13, 71, 161)  # pale -> deep blue
-    r = _lerp(light[0], deep[0], frac)
-    g = _lerp(light[1], deep[1], frac)
-    b = _lerp(light[2], deep[2], frac)
+def diverging_rgb(temp: float, median: float, scale: float) -> tuple[int, int, int]:
+    """RGB on a blue→neutral→red scale according to the deviation from median."""
+    frac = 0.0 if scale <= 0 else max(-1.0, min(1.0, (temp - median) / scale))
+    target = HOT_RGB if frac >= 0 else COOL_RGB
+    f = abs(frac)
+    return (
+        _lerp(NEUTRAL_RGB[0], target[0], f),
+        _lerp(NEUTRAL_RGB[1], target[1], f),
+        _lerp(NEUTRAL_RGB[2], target[2], f),
+    )
+
+
+def cell_style(temp: float, median: float, scale: float) -> str:
+    r, g, b = diverging_rgb(temp, median, scale)
+    frac = abs((temp - median) / scale) if scale else 0.0
     text = "#ffffff" if frac > 0.55 else "#1a1a1a"
     return f"background-color: rgb({r},{g},{b}); color: {text};"
-
-
-def render_table(rows: list[Reading], hot: bool) -> str:
-    """Render a ranked list as an HTML table; names link to Google Maps."""
-    temps = [r.temp for r in rows]
-    vmin, vmax = min(temps), max(temps)
-    head = (
-        "<table class='cc-table'><thead><tr>"
-        "<th>#</th><th>Place</th><th>Postal&nbsp;code</th>"
-        "<th>Latitude</th><th>Longitude</th><th>°C</th>"
-        "</tr></thead><tbody>"
-    )
-    body: list[str] = []
-    for rank, row in enumerate(rows, start=1):
-        url = maps_url(row.lat, row.lon)
-        name = html.escape(row.name)
-        postal = html.escape(row.postal_code)
-        style = temp_color(row.temp, vmin, vmax, hot)
-        body.append(
-            f"<tr><td class='rank'>{rank}</td>"
-            f"<td><a href='{url}' target='_blank' rel='noopener'>{name}</a></td>"
-            f"<td>{postal}</td>"
-            f"<td>{row.lat:.4f}</td><td>{row.lon:.4f}</td>"
-            f"<td class='temp' style='{style}'>{row.temp:.1f}</td></tr>"
-        )
-    return head + "".join(body) + "</tbody></table>"
-
-
-TABLE_CSS = """
-<style>
-.cc-table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
-.cc-table th, .cc-table td { padding: 6px 10px; text-align: left;
-    border-bottom: 1px solid rgba(128,128,128,0.25); }
-.cc-table th { font-weight: 600; border-bottom: 2px solid rgba(128,128,128,0.5); }
-.cc-table td.rank { color: #888; width: 2rem; }
-.cc-table td.temp { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums;
-    border-radius: 4px; }
-.cc-table a { text-decoration: none; font-weight: 600; }
-.cc-table a:hover { text-decoration: underline; }
-</style>
-"""
-
-
-def build_readings(
-    places: list[Place], times: list[str], series: dict[str, list[float | None]], target: str
-) -> list[Reading]:
-    """Collect a temperature reading per place at the ``target`` timestamp."""
-    try:
-        idx = times.index(target)
-    except ValueError:
-        return []
-
-    readings: list[Reading] = []
-    for place in places:
-        temps = series.get(place.insee_code, [])
-        if idx >= len(temps):
-            continue
-        temp = temps[idx]
-        if temp is None:
-            continue
-        readings.append(Reading(place.name, place.postal_code, place.lat, place.lon, float(temp)))
-    return readings
 
 
 def selected_date(value: object, fallback: date) -> date:
@@ -160,25 +129,146 @@ def selected_date(value: object, fallback: date) -> date:
     return fallback
 
 
+def build_readings(
+    places: list[Place], series: dict[str, list[float | None]], idx: int
+) -> list[Reading]:
+    """Temperature reading per place at timeline position ``idx``."""
+    readings: list[Reading] = []
+    for place in places:
+        temps = series.get(place.insee_code, [])
+        if idx >= len(temps) or temps[idx] is None:
+            continue
+        readings.append(
+            Reading(
+                place.insee_code,
+                place.name,
+                place.postal_code,
+                place.departement_code,
+                place.departement_name,
+                place.lat,
+                place.lon,
+                float(temps[idx]),  # type: ignore[arg-type]
+            )
+        )
+    return readings
+
+
+def render_table(rows: list[Reading], median: float, scale: float) -> None:
+    """Sortable table: commune, département, température, écart à la médiane."""
+    df = pd.DataFrame(
+        {
+            "Commune": [r.name for r in rows],
+            "Département": [r.departement for r in rows],
+            "Température": [round(r.temp, 1) for r in rows],
+            "Écart médiane": [round(r.temp - median, 1) for r in rows],
+        }
+    )
+    styles = [cell_style(r.temp, median, scale) for r in rows]
+    styler = df.style.apply(lambda _col: styles, subset=["Température"])
+    st.dataframe(
+        styler,
+        hide_index=True,
+        width="stretch",
+        height=460,
+        column_config={
+            "Commune": st.column_config.TextColumn("Commune"),
+            "Département": st.column_config.TextColumn("Département"),
+            "Température": st.column_config.NumberColumn("Température", format="%.1f °C"),
+            "Écart médiane": st.column_config.NumberColumn("Écart médiane", format="%+.1f °C"),
+        },
+    )
+
+
+def build_map(rows: list[Reading], median: float, scale: float):
+    """French (IGN) map; points coloured by temperature, sized to scale with zoom."""
+    df = pd.DataFrame(
+        [
+            {
+                "insee_code": r.insee_code,
+                "name": r.name,
+                "dept": r.departement,
+                "temp": round(r.temp, 1),
+                "ecart": round(r.temp - median, 1),
+                "lat": r.lat,
+                "lon": r.lon,
+                "color": [*diverging_rgb(r.temp, median, scale), 220],
+            }
+            for r in rows
+        ]
+    )
+    tiles = pdk.Layer("TileLayer", data=IGN_PLAN_TILES, min_zoom=0, max_zoom=18, tile_size=256)
+    scatter = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        id="communes",
+        get_position=["lon", "lat"],
+        get_fill_color="color",
+        get_radius=11000,  # metres → grows when zooming in
+        radius_min_pixels=4,
+        radius_max_pixels=45,
+        pickable=True,
+        stroked=True,
+        get_line_color=[255, 255, 255],
+        line_width_min_pixels=0.5,
+        auto_highlight=True,
+    )
+    # map_provider=None (no Carto base, we use the IGN tiles) and an HTML tooltip
+    # are valid at runtime but over-narrowed in pydeck's type stubs.
+    deck_kwargs: dict[str, Any] = {
+        "map_provider": None,
+        "tooltip": {
+            "html": "<b>{name}</b> ({dept})<br/>{temp} °C ({ecart} vs médiane)",
+            "style": {"backgroundColor": "#222", "color": "#fff", "fontSize": "12px"},
+        },
+    }
+    deck = pdk.Deck(
+        layers=[tiles, scatter],
+        initial_view_state=pdk.ViewState(latitude=46.6, longitude=2.5, zoom=4.7),
+        height=560,
+        **deck_kwargs,
+    )
+    return st.pydeck_chart(
+        deck, on_select="rerun", selection_mode="single-object", key="france_map"
+    )
+
+
+@st.dialog("Détail de la commune", width="large")
+def commune_dialog(
+    r: Reading, median: float, idx: int, times: list[str], series: dict[str, list[float | None]]
+) -> None:
+    st.markdown(f"### {r.name}")
+    st.write(f"**Département :** {r.departement}  ·  **Code postal :** {r.postal_code}")
+    col1, col2 = st.columns(2)
+    col1.metric("Température", f"{r.temp:.1f} °C")
+    col2.metric("Écart à la médiane", f"{r.temp - median:+.1f} °C")
+
+    end = min(idx + CURVE_HOURS, len(times))
+    temps = series.get(r.insee_code, [])[idx:end]
+    hours = [datetime.fromisoformat(t) for t in times[idx:end]]
+    curve = pd.DataFrame({"Heure": hours, "Température (°C)": temps}).set_index("Heure")
+    st.markdown(f"**Évolution sur {len(hours)} h**")
+    st.line_chart(curve, y="Température (°C)")
+
+    st.link_button("📍 Ouvrir dans Google Maps", maps_url(r.lat, r.lon))
+
+
 def main() -> None:
-    st.markdown(TABLE_CSS, unsafe_allow_html=True)
     st.title("🍫 ChoCacao")
     st.caption(
-        "The hottest and coolest places in metropolitan France — find where to "
-        "chase the sun or escape the heatwave."
+        "Les communes les plus chaudes et les plus fraîches de France métropolitaine — "
+        "où profiter du soleil ou fuir la canicule."
     )
 
     try:
         places, times, series = get_forecast(forecast_period_key())
-    except Exception as exc:  # surface API/network issues to the user
-        st.error(f"Could not fetch forecasts from open-meteo: {exc}")
+    except Exception as exc:  # remonter les erreurs réseau / API à l'utilisateur
+        st.error(f"Impossible de récupérer les prévisions depuis open-meteo : {exc}")
         st.stop()
     if not times:
-        st.error("open-meteo returned no forecast timeline. Please try again later.")
+        st.error("open-meteo n'a renvoyé aucune prévision. Veuillez réessayer plus tard.")
         st.stop()
 
-    # The selectable range is exactly the window held in today's cached pull,
-    # so a valid selection can never fall outside the fetched data.
+    # La plage sélectionnable correspond exactement à la fenêtre déjà en cache.
     available_dates = sorted({t[:10] for t in times})
     min_date = date.fromisoformat(available_dates[0])
     max_date = date.fromisoformat(available_dates[-1])
@@ -192,51 +282,70 @@ def main() -> None:
             value=default_date,
             min_value=min_date,
             max_value=max_date,
-            help="Forecasts are available up to one week ahead.",
+            help="Prévisions disponibles jusqu'à une semaine à l'avance.",
         )
     with col_hour:
         hour = st.selectbox(
-            "Hour (local time)",
+            "Heure (locale)",
             options=list(range(24)),
             index=DEFAULT_HOUR,
             format_func=lambda h: f"{h:02d}:00",
-            help="Default is 16:00 (4 pm), usually the hottest hour of the day.",
+            help="Par défaut 16 h, l'heure généralement la plus chaude.",
         )
 
     chosen = selected_date(date_value, default_date)
     target = f"{chosen.isoformat()}T{hour:02d}:00"
-
-    readings = build_readings(places, times, series, target)
-    when = datetime.fromisoformat(target).strftime("%A %d %B %Y at %H:%M")
-    if not readings:
-        st.warning(f"No forecast available for {when}. Try another date or hour.")
+    when = format_fr(datetime.fromisoformat(target))
+    try:
+        idx = times.index(target)
+    except ValueError:
+        st.warning(f"Aucune prévision disponible pour {when}.")
         st.stop()
 
-    st.subheader(f"{when} · {len(places)} places surveyed")
+    readings = build_readings(places, series, idx)
+    if not readings:
+        st.warning(f"Aucune prévision disponible pour {when}.")
+        st.stop()
 
-    hottest = sorted(readings, key=lambda r: r.temp, reverse=True)[:TOP_N]
+    median = statistics.median(r.temp for r in readings)
+    scale = max((abs(r.temp - median) for r in readings), default=1.0) or 1.0
+
     coolest = sorted(readings, key=lambda r: r.temp)[:TOP_N]
+    hottest = sorted(readings, key=lambda r: r.temp, reverse=True)[:TOP_N]
+
+    st.subheader(f"{when} · {len(readings)} communes analysées · médiane {median:.1f} °C")
+    st.caption(
+        "Cliquez sur un en-tête de colonne pour trier (commune, département ou température)."
+    )
 
     left, right = st.columns(2)
     with left:
-        st.markdown(f"### 🔥 {TOP_N} hottest")
-        st.markdown(render_table(hottest, hot=True), unsafe_allow_html=True)
+        st.markdown(f"### ❄️ {TOP_N} plus fraîches")
+        render_table(coolest, median, scale)
     with right:
-        st.markdown(f"### ❄️ {TOP_N} coolest")
-        st.markdown(render_table(coolest, hot=False), unsafe_allow_html=True)
+        st.markdown(f"### 🔥 {TOP_N} plus chaudes")
+        render_table(hottest, median, scale)
 
-    with st.expander("🗺️ Show these places on a map"):
-        map_rows = [{"lat": r.lat, "lon": r.lon, "color": HOT_COLOR} for r in hottest]
-        map_rows += [{"lat": r.lat, "lon": r.lon, "color": COOL_COLOR} for r in coolest]
-        map_df = pd.DataFrame(map_rows)
-        st.map(map_df, latitude="lat", longitude="lon", color="color", size=10000)
+    st.subheader("🗺️ Carte")
+    st.caption("Cliquez sur un point pour afficher le détail et l'évolution sur 48 h.")
+    extreme = coolest + hottest
+    by_insee = {r.insee_code: r for r in extreme}
+    event = build_map(extreme, median, scale)
+
+    sel = getattr(event, "selection", None) or {}
+    objs = (sel.get("objects") or {}).get("communes") or []
+    clicked = objs[0].get("insee_code") if objs else None
+    if clicked and st.session_state.get("shown_commune") != clicked:
+        st.session_state["shown_commune"] = clicked
+        if clicked in by_insee:
+            commune_dialog(by_insee[clicked], median, idx, times, series)
 
     st.divider()
     st.caption(
-        "Click a place name to open it in Google Maps. "
-        "Weather data by [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0); "
-        "commune data from [geo.api.gouv.fr](https://geo.api.gouv.fr/). "
-        "Temperatures are 2 m air temperature in °C, local time."
+        "Données météo : [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0) · "
+        "Communes : [geo.api.gouv.fr](https://geo.api.gouv.fr/) · "
+        "Fond de carte : [IGN / Géoplateforme](https://geoservices.ign.fr/). "
+        "Températures de l'air à 2 m en °C, heure locale."
     )
 
 

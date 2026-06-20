@@ -17,6 +17,8 @@ from typing import Any
 
 import requests
 
+from chocacao.departements import DEPARTEMENTS
+
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 TIMEZONE = "Europe/Paris"
 FORECAST_DAYS = 8  # today + up to 7 days ahead ("up to 1 week ahead")
@@ -35,20 +37,31 @@ class Place:
     insee_code: str
     name: str
     postal_code: str
+    departement_code: str
+    departement_name: str
     lat: float
     lon: float
 
 
 def load_places() -> list[Place]:
-    """Load the precomputed grid → commune table from disk."""
+    """Load the precomputed grid → commune table from disk.
+
+    The département (code + name) is derived from the INSEE code at load time
+    (see :mod:`chocacao.departements`), so it stays in sync without re-running
+    the grid build.
+    """
     places: list[Place] = []
     with DATA_CSV.open(encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
+            insee = row["insee_code"]
+            dept_code = insee[:2]
             places.append(
                 Place(
-                    insee_code=row["insee_code"],
+                    insee_code=insee,
                     name=row["name"],
                     postal_code=row["postal_code"],
+                    departement_code=dept_code,
+                    departement_name=DEPARTEMENTS.get(dept_code, ""),
                     lat=float(row["lat"]),
                     lon=float(row["lon"]),
                 )
