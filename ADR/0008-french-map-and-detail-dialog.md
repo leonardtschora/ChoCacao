@@ -23,12 +23,19 @@ We replaced the simple `st.map` with **pydeck**, because we now need click
 selection, custom colours, tooltips, and zoom-aware sizing — none of which
 `st.map` supports.
 
-- **Basemap:** the official French **IGN "Plan IGN v2"** raster tiles from the
-  Géoplateforme (`data.geopf.fr`, no API key), loaded as a pydeck `TileLayer`
-  with `map_provider=None`. This is a genuinely French map with French labels.
-- **Points:** a `ScatterplotLayer` of the 100 extreme communes (50 coolest +
-  50 hottest), `pickable=True`, coloured by the **same diverging scale as the
-  tables** (ADR 0006).
+- **Basemap:** the official French **IGN "Plan IGN" vector style** (attenuated
+  variant) from the Géoplateforme (`data.geopf.fr`, no API key), set as the deck's
+  `map_style` and rendered by MapLibre via `map_provider="carto"` (token-free).
+  This is a genuinely French map with French labels.
+  - *Pitfall avoided:* a first attempt used a raster `TileLayer`, which appeared
+    blank. deck.gl's `TileLayer` needs a JS `renderSubLayers`/`BitmapLayer`
+    callback to actually draw raster tiles, which pydeck cannot express from
+    Python. Using IGN's MapLibre **vector style as the base map** (not a deck
+    layer) is the correct, working approach.
+- **Points:** a `ScatterplotLayer` of the 200 extreme communes (100 coolest +
+  100 hottest), `pickable=True`, coloured by the **same diverging scale as the
+  tables** (ADR 0006). The scale is **gamma-steepened** (`abs(frac) ** 0.5`) so
+  small deviations from the median are already clearly visible.
 - **Zoom-aware size:** radius is in **metres** (`get_radius=11000`) so points
   grow when zooming in, bounded by `radius_min_pixels`/`radius_max_pixels` so
   they stay visible when zoomed out.

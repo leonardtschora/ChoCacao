@@ -22,7 +22,7 @@ from chocacao.forecast import Place, fetch_forecast, load_places
 st.set_page_config(page_title="ChoCacao", page_icon="🍫", layout="wide")
 
 DEFAULT_HOUR = 16  # 16 h : heure généralement la plus chaude de la journée
-TOP_N = 50
+TOP_N = 100
 CURVE_HOURS = 48
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
@@ -31,15 +31,14 @@ REFRESH_HOUR = 2  # les prévisions sont rafraîchies une fois par jour, à 02 h
 # Échelle de couleur divergente (RGB) partagée par les tableaux et la carte :
 # bleu profond = plus frais que la médiane, rouge profond = plus chaud.
 NEUTRAL_RGB = (245, 245, 240)
-HOT_RGB = (183, 28, 28)
-COOL_RGB = (13, 71, 161)
+HOT_RGB = (176, 0, 32)
+COOL_RGB = (0, 51, 160)
+# Gamma < 1 raidit le dégradé : un faible écart à la médiane se voit déjà bien.
+GRADIENT_GAMMA = 0.5
 
-# Fond de carte officiel français (IGN / Géoplateforme, Plan IGN v2).
-IGN_PLAN_TILES = (
-    "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0"
-    "&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM"
-    "&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png"
-)
+# Fond de carte officiel français : style vectoriel « Plan IGN » atténué
+# (IGN / Géoplateforme), chargé par MapLibre comme fond de la carte deck.gl.
+IGN_MAP_STYLE = "https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/attenue.json"
 
 JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 MOIS = [
@@ -101,11 +100,16 @@ def _lerp(a: int, b: int, frac: float) -> int:
     return round(a + (b - a) * frac)
 
 
-def diverging_rgb(temp: float, median: float, scale: float) -> tuple[int, int, int]:
-    """RGB on a blue→neutral→red scale according to the deviation from median."""
+def _intensity(temp: float, median: float, scale: float) -> tuple[float, float]:
+    """Return (signed fraction in [-1,1], gamma-steepened magnitude in [0,1])."""
     frac = 0.0 if scale <= 0 else max(-1.0, min(1.0, (temp - median) / scale))
+    return frac, abs(frac) ** GRADIENT_GAMMA
+
+
+def diverging_rgb(temp: float, median: float, scale: float) -> tuple[int, int, int]:
+    """RGB on a steep blue→neutral→red scale based on deviation from the median."""
+    frac, f = _intensity(temp, median, scale)
     target = HOT_RGB if frac >= 0 else COOL_RGB
-    f = abs(frac)
     return (
         _lerp(NEUTRAL_RGB[0], target[0], f),
         _lerp(NEUTRAL_RGB[1], target[1], f),
@@ -115,8 +119,8 @@ def diverging_rgb(temp: float, median: float, scale: float) -> tuple[int, int, i
 
 def cell_style(temp: float, median: float, scale: float) -> str:
     r, g, b = diverging_rgb(temp, median, scale)
-    frac = abs((temp - median) / scale) if scale else 0.0
-    text = "#ffffff" if frac > 0.55 else "#1a1a1a"
+    _, f = _intensity(temp, median, scale)
+    text = "#ffffff" if f > 0.6 else "#1a1a1a"
     return f"background-color: rgb({r},{g},{b}); color: {text};"
 
 
@@ -169,7 +173,7 @@ def render_table(rows: list[Reading], median: float, scale: float) -> None:
         styler,
         hide_index=True,
         width="stretch",
-        height=460,
+        height=600,
         column_config={
             "Commune": st.column_config.TextColumn("Commune"),
             "Département": st.column_config.TextColumn("Département"),
@@ -196,34 +200,33 @@ def build_map(rows: list[Reading], median: float, scale: float):
             for r in rows
         ]
     )
-    tiles = pdk.Layer("TileLayer", data=IGN_PLAN_TILES, min_zoom=0, max_zoom=18, tile_size=256)
     scatter = pdk.Layer(
         "ScatterplotLayer",
         data=df,
         id="communes",
         get_position=["lon", "lat"],
         get_fill_color="color",
-        get_radius=11000,  # metres → grows when zooming in
-        radius_min_pixels=4,
-        radius_max_pixels=45,
+        get_radius=9000,  # mètres → la taille grandit au zoom
+        radius_min_pixels=3,
+        radius_max_pixels=40,
         pickable=True,
         stroked=True,
-        get_line_color=[255, 255, 255],
+        get_line_color=[40, 40, 40],
         line_width_min_pixels=0.5,
         auto_highlight=True,
     )
-    # map_provider=None (no Carto base, we use the IGN tiles) and an HTML tooltip
-    # are valid at runtime but over-narrowed in pydeck's type stubs.
+    # The HTML tooltip is valid at runtime but over-narrowed in pydeck's stubs.
     deck_kwargs: dict[str, Any] = {
-        "map_provider": None,
         "tooltip": {
             "html": "<b>{name}</b> ({dept})<br/>{temp} °C ({ecart} vs médiane)",
             "style": {"backgroundColor": "#222", "color": "#fff", "fontSize": "12px"},
         },
     }
     deck = pdk.Deck(
-        layers=[tiles, scatter],
+        layers=[scatter],
         initial_view_state=pdk.ViewState(latitude=46.6, longitude=2.5, zoom=4.7),
+        map_provider="carto",
+        map_style=IGN_MAP_STYLE,
         height=560,
         **deck_kwargs,
     )

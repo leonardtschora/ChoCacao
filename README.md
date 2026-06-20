@@ -1,6 +1,6 @@
 # 🍫 ChoCacao
 
-**Find the 50 hottest and 50 coolest *communes* in metropolitan France for any
+**Find the 100 hottest and 100 coolest *communes* in metropolitan France for any
 hour in the week ahead.** (The interface is in French — it's built for French
 users.)
 
@@ -25,7 +25,7 @@ a panel with its detail and a 48-hour temperature curve.
    │      │ reverse-geocode each point      │   │   whole week (open-meteo,    │
    │      ▼ (geo.api.gouv.fr, geocode.py)   │   │   batched, cached daily)     │
    │ keep points inside France, dedupe      │   │ slice chosen date+hour       │
-   │   880 communes                         │   │ rank → top 50 cold / hot     │
+   │   880 communes                         │   │ rank → top 100 cold / hot    │
    │      ▼                                 │   │ sortable tables + IGN map    │
    │ data/grid_points.csv  (committed)      │   │   + click→detail dialog      │
    └───────────────────────────────────────┘   └──────────────────────────────┘
@@ -83,7 +83,8 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright
   hourly, local time (CC BY 4.0).
 - Communes & départements: [geo.api.gouv.fr](https://geo.api.gouv.fr/) (French
   government).
-- Basemap: [IGN / Géoplateforme](https://geoservices.ign.fr/) (Plan IGN v2).
+- Basemap: [IGN / Géoplateforme](https://geoservices.ign.fr/) (Plan IGN vector
+  style, rendered by MapLibre).
 
 Coverage is metropolitan France including Corsica; overseas territories are out
 of scope. Temperatures are forecasts, coloured on a diverging blue→red scale

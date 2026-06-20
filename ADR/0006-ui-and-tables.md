@@ -18,15 +18,16 @@ longitude are no longer shown.
 - **Tables: `st.dataframe`** (one per side) with native, click-to-sort column
   headers — this is what satisfies the sort-by-name / département / temperature
   requirement without any extra controls. **Coolest on the left, hottest on the
-  right.** Top 50 each.
+  right.** Top 100 each.
 - **Columns:** `Commune`, `Département` (`"05 · Hautes-Alpes"`, derived from the
   INSEE code — see ADR 0009), `Température`, `Écart médiane`.
 - **Difference to median:** the median is computed over **all** ~880 communes at
   the selected hour; each row shows `temperature − median` (signed).
 - **Colour:** the `Température` cell is shaded with a **diverging blue→neutral→red
-  scale centred on the median**, via a pandas `Styler`. The exact same mapping
-  colours the map points (ADR 0008), so a given temperature looks identical in
-  both places.
+  scale centred on the median**, via a pandas `Styler`. The scale is
+  **gamma-steepened** (`abs(frac) ** 0.5`) so small differences are visible. The
+  exact same mapping colours the map points (ADR 0008), so a given temperature
+  looks identical in both places.
 
 ## Why `st.dataframe` (revised from the original HTML tables)
 
