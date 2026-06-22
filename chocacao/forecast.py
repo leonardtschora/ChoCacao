@@ -95,22 +95,25 @@ def _request_json(session: requests.Session, params: dict[str, Any]) -> Any:
 
 def fetch_forecast(
     places: Sequence[Place],
-) -> tuple[list[str], dict[str, list[float | None]]]:
+) -> tuple[list[str], dict[str, list[float | None]], dict[str, list[float | None]]]:
     """Fetch forecasts for all places.
 
-    Returns ``(times, series)`` where ``times`` is the shared hourly timeline in
-    local Europe/Paris time (e.g. ``"2026-06-20T16:00"``) and ``series`` maps each
-    commune's INSEE code to its temperature list aligned with ``times``.
+    Returns ``(times, temps, apparent)`` where ``times`` is the shared hourly
+    timeline in local Europe/Paris time (e.g. ``"2026-06-20T16:00"``); ``temps``
+    maps each commune's INSEE code to its 2 m air temperature list and
+    ``apparent`` to its apparent ("feels-like") temperature list, both aligned
+    with ``times``.
     """
     session = requests.Session()
     times: list[str] = []
-    series: dict[str, list[float | None]] = {}
+    temps: dict[str, list[float | None]] = {}
+    apparent: dict[str, list[float | None]] = {}
     batches = list(_chunks(places, BATCH_SIZE))
     for i, batch in enumerate(batches):
         params: dict[str, Any] = {
             "latitude": ",".join(f"{p.lat:.5f}" for p in batch),
             "longitude": ",".join(f"{p.lon:.5f}" for p in batch),
-            "hourly": "temperature_2m",
+            "hourly": "temperature_2m,apparent_temperature",
             "timezone": TIMEZONE,
             "forecast_days": FORECAST_DAYS,
         }
@@ -121,7 +124,8 @@ def fetch_forecast(
             hourly = entry.get("hourly", {})
             if not times:
                 times = hourly.get("time", [])
-            series[place.insee_code] = hourly.get("temperature_2m", [])
+            temps[place.insee_code] = hourly.get("temperature_2m", [])
+            apparent[place.insee_code] = hourly.get("apparent_temperature", [])
         if i < len(batches) - 1:
             time.sleep(INTER_BATCH_PAUSE)
-    return times, series
+    return times, temps, apparent

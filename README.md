@@ -11,9 +11,13 @@ chase the sun or escape the heat.
 Pick a **date** (today up to one week ahead) and an **hour** (default 16:00, the
 usual daily peak). ChoCacao queries [Open-Meteo](https://open-meteo.com/) for ~880
 communes on a 25 km grid and shows the extremes as two **sortable** tables
-(commune, département, temperature, and difference to the national median). A
-**map** plots the extremes, coloured by temperature; **click a point** to open
-a panel with its detail and a 48-hour temperature curve.
+(commune, département, air temperature, apparent "feels-like" temperature, and
+difference to the national median). A **Mesure** toggle switches the whole view —
+ranking, median and map — between air and apparent temperature; because the two
+rank differently, the selected metric changes which 100 communes appear. A
+**map** plots the extremes, each group coloured over its own range (the coolest
+go deep-blue → green, the hottest yellow → deep-red); **click a point** to open
+a panel with its detail and a 48-hour curve of both temperatures.
 
 ## How it works
 
