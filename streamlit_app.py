@@ -1,8 +1,10 @@
 """ChoCacao — les communes les plus chaudes et les plus fraîches de France.
 
 Choisissez une date (jusqu'à une semaine à l'avance) et une heure ; ChoCacao
-interroge open-meteo pour ~880 communes réparties sur une grille de 25 km et
-affiche les extrêmes. Cliquez sur un point de la carte pour le détail.
+interroge open-meteo pour ~1160 communes (grille de 25 km + les 288 plus
+peuplées) et les affiche toutes dans un tableau triable et sur une carte, du
+plus frais au plus chaud. Cherchez n'importe quelle commune par son nom pour
+l'ajouter à la volée. Cliquez sur un point de la carte pour le détail.
 """
 
 from __future__ import annotations
@@ -17,25 +19,31 @@ import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-from chocacao.forecast import Place, fetch_forecast, load_places
+from chocacao.forecast import (
+    Place,
+    fetch_forecast,
+    fetch_one,
+    load_commune_index,
+    load_places,
+)
 
 st.set_page_config(page_title="ChoCacao", page_icon="🍫", layout="wide")
 
 DEFAULT_HOUR = 16  # 16 h : heure généralement la plus chaude de la journée
-TOP_N = 100
+TABLE_ROWS_VISIBLE = 30  # hauteur du tableau : ~30 lignes visibles, le reste défile
 CURVE_HOURS = 48
+MANUAL_MAX = 10  # garde-fou sur le nombre de communes ajoutées à la volée
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
 REFRESH_HOUR = 2  # les prévisions sont rafraîchies une fois par jour, à 02 h 00
 
-# Mesure sélectionnable, partagée par le classement, la médiane et la carte.
+# Mesure sélectionnable, partagée par le tableau, la médiane et la carte.
 METRIC_TEMP = "Température de l'air"
 METRIC_APPARENT = "Température ressentie"
 
-# Échelles de couleur par groupe : chaque groupe est étiré sur toute sa gamme pour
-# faire ressortir les écarts entre points. Les 100 plus fraîches vont du bleu
-# profond (la plus froide) au vert (la « plus chaude » des fraîches) ; les 100 plus
-# chaudes vont du jaune (la « moins chaude » des chaudes) au rouge profond.
+# Échelle de couleur divergente unique, centrée sur la médiane : toutes les communes
+# sont colorées sur la même gamme. Du bleu profond (la plus froide) au vert à la
+# médiane, puis du jaune au rouge profond (la plus chaude).
 COOL_RAMP = ((13, 71, 161), (0, 150, 160), (76, 175, 80))  # bleu → turquoise → vert
 HOT_RAMP = ((255, 214, 53), (245, 130, 32), (176, 0, 32))  # jaune → orange → rouge
 
@@ -103,6 +111,25 @@ def get_forecast(
     return places, times, temps, apparent
 
 
+@st.cache_data(show_spinner=False)
+def get_index() -> list[Place]:
+    """Full metropolitan commune index, for the validated manual-lookup search box."""
+    return load_commune_index()
+
+
+@st.cache_data(show_spinner="Récupération de la commune demandée…", max_entries=64)
+def get_manual_forecast(
+    place: Place, period_key: str
+) -> tuple[list[float | None], list[float | None]]:
+    """On-demand forecast for one user-requested commune (not in the daily set).
+
+    Cached for the day (keyed by the commune and ``period_key``) but never written
+    to disk — it exists only as long as someone is asking for that commune.
+    """
+    _times, temps, apparent = fetch_one(place)
+    return temps, apparent
+
+
 def maps_url(lat: float, lon: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={lat:.5f},{lon:.5f}"
 
@@ -121,14 +148,17 @@ def _ramp(stops: tuple[tuple[int, int, int], ...], t: float) -> tuple[int, int, 
     return _lerp(a[0], b[0], frac), _lerp(a[1], b[1], frac), _lerp(a[2], b[2], frac)
 
 
-def group_rgb(value: float, lo: float, hi: float, hot: bool) -> tuple[int, int, int]:
-    """Colour for ``value`` stretched over its group's own [lo, hi] range."""
-    t = 0.5 if hi <= lo else (value - lo) / (hi - lo)
-    return _ramp(HOT_RAMP if hot else COOL_RAMP, t)
+def diverging_rgb(value: float, vmin: float, vmax: float, median: float) -> tuple[int, int, int]:
+    """Colour on a single diverging scale: blue (vmin) → green (median) → red (vmax)."""
+    if value <= median:
+        t = 1.0 if median <= vmin else (value - vmin) / (median - vmin)
+        return _ramp(COOL_RAMP, t)
+    t = 1.0 if vmax <= median else (value - median) / (vmax - median)
+    return _ramp(HOT_RAMP, t)
 
 
-def cell_style(value: float, lo: float, hi: float, hot: bool) -> str:
-    r, g, b = group_rgb(value, lo, hi, hot)
+def cell_style(value: float, vmin: float, vmax: float, median: float) -> str:
+    r, g, b = diverging_rgb(value, vmin, vmax, median)
     # Texte blanc sur fond sombre (bleu/rouge profond), sinon texte foncé.
     luminance = 0.299 * r + 0.587 * g + 0.114 * b
     text = "#ffffff" if luminance < 140 else "#1a1a1a"
@@ -144,6 +174,28 @@ def selected_date(value: object, fallback: date) -> date:
     return fallback
 
 
+def reading_at(
+    place: Place,
+    t: list[float | None],
+    a: list[float | None],
+    idx: int,
+) -> Reading | None:
+    """Build the reading for one place at timeline position ``idx`` (None if missing)."""
+    if idx >= len(t) or idx >= len(a) or t[idx] is None or a[idx] is None:
+        return None
+    return Reading(
+        place.insee_code,
+        place.name,
+        place.postal_code,
+        place.departement_code,
+        place.departement_name,
+        place.lat,
+        place.lon,
+        float(t[idx]),  # type: ignore[arg-type]
+        float(a[idx]),  # type: ignore[arg-type]
+    )
+
+
 def build_readings(
     places: list[Place],
     temps: dict[str, list[float | None]],
@@ -155,35 +207,30 @@ def build_readings(
     for place in places:
         t = temps.get(place.insee_code, [])
         a = apparent.get(place.insee_code, [])
-        if idx >= len(t) or idx >= len(a) or t[idx] is None or a[idx] is None:
-            continue
-        readings.append(
-            Reading(
-                place.insee_code,
-                place.name,
-                place.postal_code,
-                place.departement_code,
-                place.departement_name,
-                place.lat,
-                place.lon,
-                float(t[idx]),  # type: ignore[arg-type]
-                float(a[idx]),  # type: ignore[arg-type]
-            )
-        )
+        r = reading_at(place, t, a, idx)
+        if r is not None:
+            readings.append(r)
     return readings
 
 
 def render_table(
-    rows: list[Reading], hot: bool, metric: str, lo: float, hi: float, median: float
+    rows: list[Reading],
+    metric: str,
+    vmin: float,
+    vmax: float,
+    median: float,
+    manual_codes: set[str],
 ) -> None:
-    """Sortable table: commune, département, air, ressentie, écart à la médiane.
+    """Single sortable table of every commune, coloured on the diverging scale.
 
     Both temperature columns are always shown; the one matching ``metric`` is
     colour-coded and drives the ``Écart`` (deviation from that metric's median).
+    Manually-added communes are flagged with a 📍 so they stay findable after a
+    sort. ~30 rows are visible; the rest scroll. Click a header to sort.
     """
     df = pd.DataFrame(
         {
-            "Commune": [r.name for r in rows],
+            "Commune": [f"📍 {r.name}" if r.insee_code in manual_codes else r.name for r in rows],
             "Département": [r.departement for r in rows],
             "Air": [round(r.temp, 1) for r in rows],
             "Ressentie": [round(r.apparent, 1) for r in rows],
@@ -191,13 +238,13 @@ def render_table(
         }
     )
     coloured = "Ressentie" if metric == METRIC_APPARENT else "Air"
-    styles = [cell_style(r.value(metric), lo, hi, hot) for r in rows]
+    styles = [cell_style(r.value(metric), vmin, vmax, median) for r in rows]
     styler = df.style.apply(lambda _col: styles, subset=[coloured])
     st.dataframe(
         styler,
         hide_index=True,
         width="stretch",
-        height=600,
+        height=35 * TABLE_ROWS_VISIBLE + 38,  # ~30 lignes visibles + l'en-tête
         column_config={
             "Commune": st.column_config.TextColumn("Commune"),
             "Département": st.column_config.TextColumn("Département"),
@@ -209,9 +256,14 @@ def render_table(
 
 
 def map_records(
-    rows: list[Reading], hot: bool, metric: str, lo: float, hi: float, median: float
+    rows: list[Reading],
+    metric: str,
+    vmin: float,
+    vmax: float,
+    median: float,
+    manual_codes: set[str],
 ) -> list[dict[str, Any]]:
-    """Map point records coloured by the selected metric over the group's range."""
+    """Map point records coloured by the selected metric on the diverging scale."""
     return [
         {
             "insee_code": r.insee_code,
@@ -222,30 +274,54 @@ def map_records(
             "ecart": round(r.value(metric) - median, 1),
             "lat": r.lat,
             "lon": r.lon,
-            "color": [*group_rgb(r.value(metric), lo, hi, hot), 220],
+            "color": [*diverging_rgb(r.value(metric), vmin, vmax, median), 220],
+            "manual": r.insee_code in manual_codes,
         }
         for r in rows
     ]
 
 
 def build_map(records: list[dict[str, Any]], metric: str):
-    """French map; points coloured by the selected metric, sized to scale with zoom."""
+    """French map; every commune coloured by the selected metric, sized to scale with zoom.
+
+    Manually-added communes get a second, larger white-ringed marker on top so the
+    user can spot them among the ~1160 points.
+    """
     df = pd.DataFrame(records)
-    scatter = pdk.Layer(
+    base = pdk.Layer(
         "ScatterplotLayer",
         data=df,
         id="communes",
         get_position=["lon", "lat"],
         get_fill_color="color",
-        get_radius=9000,  # mètres → la taille grandit au zoom
-        radius_min_pixels=3,
-        radius_max_pixels=40,
+        get_radius=6000,  # mètres → la taille grandit au zoom
+        radius_min_pixels=2,
+        radius_max_pixels=30,
         pickable=True,
         stroked=True,
         get_line_color=[40, 40, 40],
-        line_width_min_pixels=0.5,
+        line_width_min_pixels=0.3,
         auto_highlight=True,
     )
+    layers = [base]
+    manual_df = df[df["manual"]]
+    if not manual_df.empty:
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=manual_df,
+                id="communes_manuelles",
+                get_position=["lon", "lat"],
+                get_fill_color="color",
+                get_radius=11000,
+                radius_min_pixels=6,
+                radius_max_pixels=44,
+                pickable=True,
+                stroked=True,
+                get_line_color=[255, 255, 255],
+                line_width_min_pixels=2.5,
+            )
+        )
     # The HTML tooltip is valid at runtime but over-narrowed in pydeck's stubs.
     metric_line = (
         "ressentie <b>{ressentie} °C</b> · air {air} °C"
@@ -259,7 +335,7 @@ def build_map(records: list[dict[str, Any]], metric: str):
         },
     }
     deck = pdk.Deck(
-        layers=[scatter],
+        layers=layers,
         initial_view_state=pdk.ViewState(latitude=46.6, longitude=2.5, zoom=4.7),
         map_provider="carto",
         map_style=BASEMAP_STYLE,
@@ -303,6 +379,91 @@ def commune_dialog(
     st.link_button("📍 Ouvrir dans Google Maps", maps_url(r.lat, r.lon))
 
 
+def manual_lookup(index: list[Place]) -> list[Place]:
+    """Validated commune search: returns the Places the user chose to add by name."""
+    by_code = {p.insee_code: p for p in index}
+    labels = {p.insee_code: f"{p.name} ({p.postal_code})" for p in index}
+
+    def label(code: object) -> str:
+        return labels.get(str(code), str(code))
+
+    selected = st.multiselect(
+        "🔍 Ajouter une commune précise",
+        options=list(by_code),  # index is pre-sorted by name
+        format_func=label,
+        max_selections=MANUAL_MAX,
+        placeholder="Tapez un nom de commune (ex. La Tremblade)…",
+        help=(
+            "Recherchez n'importe quelle commune de France métropolitaine. "
+            "Sa prévision est récupérée à la demande et affichée avec les autres, "
+            "sans être ajoutée au jeu de données quotidien."
+        ),
+    )
+    return [by_code[c] for c in selected]
+
+
+def add_manual_readings(
+    manual_places: list[Place],
+    existing: set[str],
+    period_key: str,
+    idx: int,
+    readings: list[Reading],
+    temps: dict[str, list[float | None]],
+    apparent: dict[str, list[float | None]],
+) -> tuple[dict[str, list[float | None]], dict[str, list[float | None]]]:
+    """Fetch user-requested communes missing from the daily set, on demand.
+
+    Appends their readings to ``readings`` and returns temperature views that
+    include the manual series (copies, so the daily cache is never mutated). A
+    commune the user picked that is already in the daily set needs no fetch.
+    """
+    to_fetch = [p for p in manual_places if p.insee_code not in existing]
+    if not to_fetch:
+        return temps, apparent
+
+    temps_view = dict(temps)
+    apparent_view = dict(apparent)
+    failed: list[str] = []
+    for place in to_fetch:
+        try:
+            t_list, a_list = get_manual_forecast(place, period_key)
+        except Exception:  # réseau/API : on prévient l'utilisateur et on continue
+            failed.append(place.name)
+            continue
+        temps_view[place.insee_code] = t_list
+        apparent_view[place.insee_code] = a_list
+        r = reading_at(place, t_list, a_list, idx)
+        if r is not None:
+            readings.append(r)
+    if failed:
+        st.warning(f"Prévision indisponible pour : {', '.join(failed)}.")
+    return temps_view, apparent_view
+
+
+def render_highlights(
+    readings: list[Reading], manual_codes: set[str], metric: str, median: float
+) -> None:
+    """Compact readout of the user's chosen communes, with their rank in the field."""
+    chosen = [r for r in readings if r.insee_code in manual_codes]
+    if not chosen:
+        return
+    rank = {r.insee_code: i for i, r in enumerate(sorted(readings, key=lambda r: r.value(metric)))}
+    total = len(readings)
+    st.markdown("#### 📍 Vos communes")
+    per_row = 4
+    for start in range(0, len(chosen), per_row):
+        row = chosen[start : start + per_row]
+        for r, col in zip(row, st.columns(per_row), strict=False):
+            with col:
+                st.metric(
+                    f"{r.name} ({r.departement_code})",
+                    f"{r.value(metric):.1f} °C",
+                    delta=f"{r.value(metric) - median:+.1f} °C vs médiane",
+                    delta_color="off",
+                )
+                st.caption(f"{rank[r.insee_code] + 1}ᵉ / {total} (du plus frais au plus chaud)")
+
+
 def main() -> None:
     st.title("🍫 ChoCacao")
     st.caption(
@@ -310,8 +471,9 @@ def main() -> None:
         "où profiter du soleil ou fuir la canicule."
     )
 
+    period_key = forecast_period_key()
     try:
-        places, times, temps, apparent = get_forecast(forecast_period_key())
+        places, times, temps, apparent = get_forecast(period_key)
     except Exception as exc:  # remonter les erreurs réseau / API à l'utilisateur
         st.error(f"Impossible de récupérer les prévisions depuis open-meteo : {exc}")
         st.stop()
@@ -348,9 +510,11 @@ def main() -> None:
             "Mesure",
             options=[METRIC_TEMP, METRIC_APPARENT],
             default=METRIC_TEMP,
-            help="Critère utilisé pour le classement, la médiane et la coloration de la carte.",
+            help="Critère utilisé pour le tableau, la médiane et la coloration de la carte.",
         )
         metric = metric or METRIC_TEMP  # le widget peut renvoyer None si désélectionné
+
+    manual_places = manual_lookup(get_index())
 
     chosen = selected_date(date_value, default_date)
     target = f"{chosen.isoformat()}T{hour:02d}:00"
@@ -362,47 +526,44 @@ def main() -> None:
         st.stop()
 
     readings = build_readings(places, temps, apparent, idx)
+    # Communes ajoutées à la volée : récupérées à la demande, jamais stockées.
+    existing = {p.insee_code for p in places}
+    temps, apparent = add_manual_readings(
+        manual_places, existing, period_key, idx, readings, temps, apparent
+    )
+    manual_codes = {p.insee_code for p in manual_places}
     if not readings:
         st.warning(f"Aucune prévision disponible pour {when}.")
         st.stop()
 
-    # Le classement, la médiane, l'écart et la carte suivent la mesure choisie.
+    # La médiane, l'écart, le tri et la carte suivent la mesure choisie.
     median = statistics.median(r.value(metric) for r in readings)
-    coolest = sorted(readings, key=lambda r: r.value(metric))[:TOP_N]
-    hottest = sorted(readings, key=lambda r: r.value(metric), reverse=True)[:TOP_N]
+    values = [r.value(metric) for r in readings]
+    vmin, vmax = min(values), max(values)
+    ordered = sorted(readings, key=lambda r: r.value(metric))  # du plus frais au plus chaud
 
-    # Chaque groupe est coloré sur sa propre gamme pour maximiser le contraste.
-    cool_lo = coolest[0].value(metric)
-    cool_hi = coolest[-1].value(metric)
-    hot_hi = hottest[0].value(metric)
-    hot_lo = hottest[-1].value(metric)
+    st.subheader(f"{when} · {len(readings)} communes · médiane {median:.1f} °C ({metric.lower()})")
 
-    st.subheader(
-        f"{when} · {len(readings)} communes analysées · "
-        f"médiane {median:.1f} °C ({metric.lower()})"
-    )
+    render_highlights(readings, manual_codes, metric, median)
+
+    st.markdown("### 🌡️ Toutes les communes")
     st.caption(
-        "Cliquez sur un en-tête de colonne pour trier (commune, département, air ou ressentie)."
+        "Triées du plus frais au plus chaud. Cliquez sur un en-tête de colonne pour trier "
+        "(commune, département, air, ressentie) — décroissant pour voir les plus chaudes."
     )
-
-    left, right = st.columns(2)
-    with left:
-        st.markdown(f"### ❄️ {TOP_N} plus fraîches")
-        render_table(coolest, False, metric, cool_lo, cool_hi, median)
-    with right:
-        st.markdown(f"### 🔥 {TOP_N} plus chaudes")
-        render_table(hottest, True, metric, hot_lo, hot_hi, median)
+    render_table(ordered, metric, vmin, vmax, median, manual_codes)
 
     st.subheader("🗺️ Carte")
     st.caption("Cliquez sur un point pour afficher le détail et l'évolution sur 48 h.")
-    by_insee = {r.insee_code: r for r in coolest + hottest}
-    records = map_records(coolest, False, metric, cool_lo, cool_hi, median) + map_records(
-        hottest, True, metric, hot_lo, hot_hi, median
-    )
+    by_insee = {r.insee_code: r for r in readings}
+    records = map_records(readings, metric, vmin, vmax, median, manual_codes)
     event = build_map(records, metric)
 
     sel = getattr(event, "selection", None) or {}
-    objs = (sel.get("objects") or {}).get("communes") or []
+    objects = sel.get("objects") or {}
+    # Un point ajouté à la volée est dans les deux couches ; deck.gl renvoie la
+    # couche du dessus ("communes_manuelles"), sinon la couche de base.
+    objs = objects.get("communes") or objects.get("communes_manuelles") or []
     clicked = objs[0].get("insee_code") if objs else None
     if clicked and st.session_state.get("shown_commune") != clicked:
         st.session_state["shown_commune"] = clicked

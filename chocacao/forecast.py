@@ -29,7 +29,9 @@ REQUEST_TIMEOUT = 30
 # backoff and honour the Retry-After header when present.
 MAX_RETRIES = 6
 INTER_BATCH_PAUSE = 0.4  # gentle smoothing between batches
-DATA_CSV = Path(__file__).resolve().parent.parent / "data" / "grid_points.csv"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_CSV = DATA_DIR / "grid_points.csv"
+INDEX_CSV = DATA_DIR / "communes_index.csv"
 
 
 @dataclass(frozen=True)
@@ -43,30 +45,52 @@ class Place:
     lon: float
 
 
+def _row_to_place(row: dict[str, str]) -> Place:
+    """Build a Place from a CSV row, deriving the département from the INSEE code."""
+    insee = row["insee_code"]
+    dept_code = insee[:2]
+    return Place(
+        insee_code=insee,
+        name=row["name"],
+        postal_code=row["postal_code"],
+        departement_code=dept_code,
+        departement_name=DEPARTEMENTS.get(dept_code, ""),
+        lat=float(row["lat"]),
+        lon=float(row["lon"]),
+    )
+
+
 def load_places() -> list[Place]:
-    """Load the precomputed grid → commune table from disk.
+    """Load the precomputed grid + top-cities → commune table from disk.
 
     The département (code + name) is derived from the INSEE code at load time
     (see :mod:`chocacao.departements`), so it stays in sync without re-running
-    the grid build.
+    the build.
     """
-    places: list[Place] = []
     with DATA_CSV.open(encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            insee = row["insee_code"]
-            dept_code = insee[:2]
-            places.append(
-                Place(
-                    insee_code=insee,
-                    name=row["name"],
-                    postal_code=row["postal_code"],
-                    departement_code=dept_code,
-                    departement_name=DEPARTEMENTS.get(dept_code, ""),
-                    lat=float(row["lat"]),
-                    lon=float(row["lon"]),
-                )
-            )
-    return places
+        return [_row_to_place(row) for row in csv.DictReader(handle)]
+
+
+def load_commune_index() -> list[Place]:
+    """Load every metropolitan commune (data/communes_index.csv) for manual lookups.
+
+    Returns the same Place type as :func:`load_places`; the extra ``population``
+    column in the index file is ignored. Rows are sorted by name (as written by
+    :mod:`chocacao.build_index`) so the search box reads naturally.
+    """
+    with INDEX_CSV.open(encoding="utf-8") as handle:
+        return [_row_to_place(row) for row in csv.DictReader(handle)]
+
+
+def fetch_one(place: Place) -> tuple[list[str], list[float | None], list[float | None]]:
+    """Fetch a single commune's forecast (for a runtime, ad-hoc manual lookup).
+
+    Returns ``(times, temps, apparent)`` for that one commune, aligned the same
+    way as :func:`fetch_forecast`. Used for user-requested communes that are not
+    in the daily-cached set — fetched on demand and never written to disk.
+    """
+    times, temps, apparent = fetch_forecast([place])
+    return times, temps.get(place.insee_code, []), apparent.get(place.insee_code, [])
 
 
 def _chunks(seq: Sequence[Place], size: int) -> Iterator[Sequence[Place]]:

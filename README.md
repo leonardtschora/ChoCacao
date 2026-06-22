@@ -1,43 +1,50 @@
 # 🍫 ChoCacao
 
-**Find the 100 hottest and 100 coolest *communes* in metropolitan France for any
-hour in the week ahead.** (The interface is in French — it's built for French
-users.)
+**Find the hottest and coolest *communes* in metropolitan France for any hour in
+the week ahead.** (The interface is in French — it's built for French users.)
 
 France packs Atlantic, Mediterranean and Alpine climates into one country — 200 km
 can mean ±10 °C. When the next heatwave hits, ChoCacao shows you exactly where to
 chase the sun or escape the heat.
 
 Pick a **date** (today up to one week ahead) and an **hour** (default 16:00, the
-usual daily peak). ChoCacao queries [Open-Meteo](https://open-meteo.com/) for ~880
-communes on a 25 km grid and shows the extremes as two **sortable** tables
+usual daily peak). ChoCacao queries [Open-Meteo](https://open-meteo.com/) for
+**~1160 communes** — a 25 km grid **plus the 288 most populous communes** so big
+cities like Paris show up — and presents them all in one **sortable** table
 (commune, département, air temperature, apparent "feels-like" temperature, and
-difference to the national median). A **Mesure** toggle switches the whole view —
-ranking, median and map — between air and apparent temperature; because the two
-rank differently, the selected metric changes which 100 communes appear. A
-**map** plots the extremes, each group coloured over its own range (the coolest
-go deep-blue → green, the hottest yellow → deep-red); **click a point** to open
-a panel with its detail and a 48-hour curve of both temperatures.
+difference to the national median): ~30 rows at a glance, sort to surface either
+extreme. A **Mesure** toggle switches the whole view — table, median and map —
+between air and apparent temperature. A **map** plots every commune on a single
+diverging scale (deep-blue coolest → green at the median → deep-red hottest);
+**click a point** for its detail and a 48-hour curve.
+
+**Need a commune that isn't sampled?** Search any of France's ~35 000 communes by
+name (e.g. *La Tremblade*) and ChoCacao fetches its forecast on demand, highlights
+it (📍, with its rank in the field) and plots it — without adding it to the daily
+dataset.
 
 ## How it works
 
 ```
-                build time (once)                         run time
-   ┌───────────────────────────────────────┐   ┌──────────────────────────────┐
-   │ 25 km grid over France  (grid.py)      │   │ load data/grid_points.csv    │
-   │   2036 points                          │   │ fetch hourly temps for the   │
-   │      │ reverse-geocode each point      │   │   whole week (open-meteo,    │
-   │      ▼ (geo.api.gouv.fr, geocode.py)   │   │   batched, cached daily)     │
-   │ keep points inside France, dedupe      │   │ slice chosen date+hour       │
-   │   880 communes                         │   │ rank → top 100 cold / hot    │
-   │      ▼                                 │   │ sortable tables + IGN map    │
-   │ data/grid_points.csv  (committed)      │   │   + click→detail dialog      │
-   └───────────────────────────────────────┘   └──────────────────────────────┘
+                build time (once)                          run time
+   ┌────────────────────────────────────────┐   ┌──────────────────────────────┐
+   │ 25 km grid over France (grid.py)        │   │ load data/grid_points.csv    │
+   │   2036 points → reverse-geocode         │   │ fetch hourly temps for the   │
+   │   (geo.api.gouv.fr) → 880 communes      │   │   whole week (open-meteo,    │
+   │        +                                │   │   batched, cached daily)     │
+   │ 288 most populous communes              │   │ slice chosen date+hour       │
+   │   (build_cities.py, dedupe by INSEE)    │   │ colour all on one diverging  │
+   │      ▼  1161 communes                   │   │   scale → sortable table +   │
+   │ data/grid_points.csv      (committed)   │   │   full map + click→detail    │
+   │ data/communes_index.csv   (committed) ──┼──▶│ name search → on-demand fetch│
+   │   every commune, for manual lookups     │   │   (not stored)               │
+   └────────────────────────────────────────┘   └──────────────────────────────┘
 ```
 
-The grid → commune mapping is **precomputed once** and committed as
-`data/grid_points.csv`, so the running app needs no build-time work or city
-database. See [`ADR/`](ADR/) for the full reasoning behind every decision.
+The grid → commune mapping and the commune index are **precomputed once** and
+committed (`data/grid_points.csv`, `data/communes_index.csv`), so the running app
+needs no build-time work or city database. See [`ADR/`](ADR/) for the full
+reasoning behind every decision.
 
 ## Project layout
 
@@ -46,10 +53,14 @@ database. See [`ADR/`](ADR/) for the full reasoning behind every decision.
 | `streamlit_app.py` | The Streamlit app (entry point). |
 | `chocacao/grid.py` | Generate the ~25 km grid over France. |
 | `chocacao/geocode.py` | Reverse-geocode a point to its commune. |
-| `chocacao/build_grid.py` | One-time build of `data/grid_points.csv`. |
-| `chocacao/forecast.py` | Batched, rate-limited open-meteo fetching. |
+| `chocacao/communes.py` | Fetch the full commune list (population) from geo.api.gouv.fr. |
+| `chocacao/build_grid.py` | One-time build of the grid communes. |
+| `chocacao/build_index.py` | One-time build of `data/communes_index.csv` (every commune). |
+| `chocacao/build_cities.py` | Merge the 288 most populous communes into `grid_points.csv`. |
+| `chocacao/forecast.py` | Batched, rate-limited open-meteo fetching (+ on-demand single fetch). |
 | `chocacao/departements.py` | INSEE-code → département name map. |
-| `data/grid_points.csv` | Precomputed grid → commune table (880 rows). |
+| `data/grid_points.csv` | Precomputed fetch set: grid + top cities (1161 rows). |
+| `data/communes_index.csv` | Every metropolitan commune, for the manual lookup (~34 700 rows). |
 | `ADR/` | Architecture Decision Records. |
 
 ## Run locally
@@ -61,13 +72,19 @@ uv sync                                   # create the env, install deps
 uv run streamlit run streamlit_app.py     # open http://localhost:8501
 ```
 
-### Rebuild the grid (optional)
+### Rebuild the data (optional)
 
-Only needed to regenerate the dataset (makes ~2000 calls to geo.api.gouv.fr):
+Only needed to regenerate the committed datasets. The grid build makes ~2000
+calls to geo.api.gouv.fr; the index/cities builds make one bulk call each.
 
 ```bash
-uv run python -m chocacao.build_grid
+uv run python -m chocacao.build_grid     # grid → commune table (~2000 calls)
+uv run python -m chocacao.build_index    # every commune → data/communes_index.csv
+uv run python -m chocacao.build_cities   # merge top-288 cities into grid_points.csv
 ```
+
+Run `build_index` before `build_cities` (the latter reads population from the
+index). `build_cities` is idempotent — it de-duplicates by INSEE code.
 
 ### Quality checks
 
